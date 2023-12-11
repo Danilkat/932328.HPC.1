@@ -77,10 +77,14 @@
     </CudaCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <CudaCompile Include="addVectors.cu" />
     <CudaCompile Include="debug.cpp" />
+    <CudaCompile Include="debug.cu" />
     <CudaCompile Include="kernel.cu" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="addVectors.cuh" />
+    <ClInclude Include="debug.cuh" />
     <ClInclude Include="debug.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

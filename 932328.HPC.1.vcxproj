@@ -78,12 +78,14 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <CudaCompile Include="addVectors.cu" />
+    <CudaCompile Include="histogram.cu" />
     <CudaCompile Include="debug.cpp" />
     <CudaCompile Include="debug.cu" />
     <CudaCompile Include="kernel.cu" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="addVectors.cuh" />
+    <ClInclude Include="histogram.cuh" />
     <ClInclude Include="debug.cuh" />
     <ClInclude Include="debug.h" />
   </ItemGroup>

@@ -10,6 +10,7 @@
 #include <Windows.h>
 #include <iostream>
 #include "addVectors.cuh"
+#include "histogram.cuh"
 #include "debug.cuh"
 
 int main()
@@ -20,11 +21,14 @@ int main()
 
     int size = 0;
     std::cin >> size;
-    addWrapper(size);
+    /*addWrapper(size);*/
+ 
 
-    addConstWrapper();
+    //addConstWrapper();
 
     //return printIdsWrapper();
     //return printIds2DWrapper();
+    histogramWrapper(size);
+    
 }
 

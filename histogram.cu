@@ -7,8 +7,9 @@
 
 #define BIN_COUNT 256
 #define SHARED_BIN_COUNT 32
+#define THREADS 256
+#define BLOCKS 1000
 
-__shared__ unsigned int d_bin_data_shared[BIN_COUNT];
 
 unsigned char* generateRandomString(int size) {
     std::srand(std::time(0));
@@ -25,61 +26,45 @@ unsigned char* generateRandomString(int size) {
     return randomString;
 }
 
-/* Each read is 4 bytes, not one, 32 x 4 =  128 byte reads */
-/* Accumulate into shared memory N times */
-__global__ void histogramKernel(unsigned int* d_hist_data,
-    unsigned int* d_bin_data)
+__global__ void histogramKernel(unsigned char* d_hist_data,
+    long long size, unsigned long long* d_bin_data)
 {
-    /* Work out our thread id */
-    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    unsigned int idy = blockIdx.y * blockDim.y + threadIdx.y;
-    unsigned int tid =  idx + idy * blockDim.x * gridDim.x;
+    __shared__ unsigned int d_bin_data_shared[BIN_COUNT];
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    int step = blockDim.x * gridDim.x;
 
-    /* Clear shared memory */
     d_bin_data_shared[threadIdx.x] = 0;
 
-    /* Wait for all threads to update shared memory */
     __syncthreads();
 
-    unsigned int value_u32 =  d_hist_data[tid];
     
-    //atomicAdd(&(d_bin_data_shared[0]), 1);
-    atomicAdd(&(d_bin_data_shared[((value_u32 & 0x000000FF))]), 1);
-    atomicAdd(&(d_bin_data_shared[((value_u32 & 0x0000FF00) >> 8)]), 1);
-    atomicAdd(&(d_bin_data_shared[((value_u32 & 0x00FF0000) >> 16)]), 1);
-    atomicAdd(&(d_bin_data_shared[((value_u32 & 0xFF000000) >> 24)]), 1);
-
-    /* Wait for all threads to update shared memory */
-    __syncthreads();
-
-    /* The write the accumulated data back to global memory in blocks, not scattered */
-    atomicAdd(&(d_bin_data[threadIdx.x]), d_bin_data_shared[threadIdx.x]);
-}
-
-void myhistogramCPU(unsigned int* h_hist_data, unsigned int* h_bin_data, unsigned int N) {
-    unsigned int start_time = clock();
-    printf("%d\n", sizeof((unsigned int*)h_hist_data)[0]);
-    printf("%d\n", sizeof(h_hist_data[0]));
-
-    for (unsigned int i = 0; i < BIN_COUNT; i++) h_bin_data[i] = 0;
-    for (unsigned int i = 0; i < N / 4; i++) {
-        unsigned int data = ((unsigned int*)h_hist_data)[i];
-        h_bin_data[(data & 0x000000FF)]++;
-        h_bin_data[((data & 0x0000FF00) >> 8)]++;
-        h_bin_data[((data & 0x00FF0000) >> 16)]++;
-        h_bin_data[((data & 0xFF000000) >> 24)]++;
+    while (i < size) {
+        atomicAdd(&d_bin_data_shared[d_hist_data[i]], 1);
+        i += step;
     }
 
-    unsigned int end_time = clock();
-    unsigned int search_time = end_time - start_time;
-    printf("Время выполнения CPU: %d мс.\n", search_time);
+    __syncthreads();
+
+    atomicAdd(&d_bin_data[threadIdx.x], d_bin_data_shared[threadIdx.x]);
 }
 
-cudaError_t histogramWithCuda(unsigned int* h_hist_data, unsigned int* h_bin_data_GPU, unsigned int size) {
-    printf("%d\n", sizeof(((unsigned int*)h_hist_data)[0]));
-    printf("%d\n", sizeof(h_hist_data[0]));
-    unsigned int* d_hist_data;
-    unsigned int* d_bin_data;
+void myhistogramCPU(unsigned char* h_hist_data, unsigned long long* h_bin_data, unsigned int N) {
+    clock_t start_time = clock();
+
+    for (unsigned int i = 0; i < BIN_COUNT; i++) h_bin_data[i] = 0;
+    for (unsigned int i = 0; i < N; i++) {
+        unsigned char data = h_hist_data[i];
+        h_bin_data[data]++;
+    }
+
+    clock_t end_time = clock();
+    double search_time = (double)(end_time - start_time);
+    printf("Время выполнения CPU: %f мс.\n", search_time);
+}
+
+cudaError_t histogramWithCuda(unsigned char* h_hist_data, unsigned long long* h_bin_data_GPU, unsigned long long size) {
+    unsigned char* d_hist_data;
+    unsigned long long* d_bin_data;
     cudaError_t cudaStatus;
 
     cudaStatus = cudaSetDevice(0);
@@ -93,14 +78,19 @@ cudaError_t histogramWithCuda(unsigned int* h_hist_data, unsigned int* h_bin_dat
         goto Error;
     }
 
-    cudaStatus = cudaMalloc((void**)&d_bin_data, BIN_COUNT * sizeof(unsigned int));
+    cudaStatus = cudaMalloc((void**)&d_bin_data, BIN_COUNT * sizeof(long long));
+    cudaMemset(d_bin_data, 0, BIN_COUNT * sizeof(long long));
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaMalloc failed!");
         goto Error;
     }
 
     // Высчитываем с момента копирования
-    unsigned int start_time = clock();
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
+    cudaEventRecord(start);
 
     cudaStatus = cudaMemcpy(d_hist_data, h_hist_data, size, cudaMemcpyHostToDevice);
     if (cudaStatus != cudaSuccess) {
@@ -108,9 +98,18 @@ cudaError_t histogramWithCuda(unsigned int* h_hist_data, unsigned int* h_bin_dat
         goto Error;
     }
 
-    histogramKernel << <size / 128,
-        32 >> > (
-            d_hist_data, d_bin_data);
+    histogramKernel << <size / 256,
+        256 >> > (
+            d_hist_data, size, d_bin_data);
+
+    cudaStatus = cudaMemcpy(h_bin_data_GPU, d_bin_data, BIN_COUNT * sizeof(long long), cudaMemcpyDeviceToHost);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMemcpy failed!");
+        goto Error;
+    }
+
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
 
     cudaStatus = cudaGetLastError();
     if (cudaStatus != cudaSuccess) {
@@ -124,15 +123,9 @@ cudaError_t histogramWithCuda(unsigned int* h_hist_data, unsigned int* h_bin_dat
         goto Error;
     }
 
-    cudaStatus = cudaMemcpy(h_bin_data_GPU, d_bin_data, BIN_COUNT * sizeof(unsigned int), cudaMemcpyDeviceToHost);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed!");
-        goto Error;
-    }
-
-    unsigned int end_time = clock();
-    unsigned int search_time = end_time - start_time;
-    printf("Время выполнения GPU: %d мс.", search_time);
+    float milliseconds = 0;
+    cudaEventElapsedTime(&milliseconds, start, stop);
+    printf("Время выполнения GPU: %f мс.", milliseconds);
 
 
 Error:
@@ -144,12 +137,9 @@ Error:
 
 int histogramWrapper(unsigned int size) {
     unsigned char* h_hist_data;
-    unsigned int* h_bin_data_CPU, * h_bin_data_GPU;
-
-    assert((size % 128u) == 0u);
+    unsigned long long* h_bin_data_CPU, * h_bin_data_GPU;
 
     h_hist_data = generateRandomString(size);
-    printf("%d\n", sizeof(h_hist_data));
     /*for (int i = 0; i < size; i++)
     {
         if ((int)h_hist_data[i] > 31) {
@@ -158,10 +148,10 @@ int histogramWrapper(unsigned int size) {
         std::cout << (int)h_hist_data[i];
         std::cout << std::endl;
     }*/
-    h_bin_data_CPU = (unsigned int*)malloc(BIN_COUNT * sizeof(unsigned int));
-    h_bin_data_GPU = (unsigned int*)malloc(BIN_COUNT * sizeof(unsigned int));
+    h_bin_data_CPU = (unsigned long long*)malloc(BIN_COUNT * sizeof(unsigned long long));
+    h_bin_data_GPU = (unsigned long long*)malloc(BIN_COUNT * sizeof(unsigned long long));
 
-    myhistogramCPU((unsigned int*)h_hist_data, h_bin_data_CPU, size);
+    myhistogramCPU(h_hist_data, h_bin_data_CPU, size);
 
     //std::cout << "\n0 - " << h_bin_data_CPU[0] << std::endl;
     /*for (int i = 0; i < BIN_COUNT; i++)
@@ -172,7 +162,7 @@ int histogramWrapper(unsigned int size) {
     }
     std::cout << std::endl;*/
 
-    cudaError_t cudaStatus = histogramWithCuda((unsigned int*)h_hist_data, h_bin_data_GPU, size);
+    cudaError_t cudaStatus = histogramWithCuda(h_hist_data, h_bin_data_GPU, size);
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "histogramWithCuda failed!");
         return 1;
@@ -181,14 +171,14 @@ int histogramWrapper(unsigned int size) {
     bool match = true;
     for (size_t i = 0; i < BIN_COUNT; i++)
     {
-        printf("Index %d. Asserted: %d. From kernel: %d ", i, h_bin_data_CPU[i], h_bin_data_GPU[i]);
         if (h_bin_data_CPU[i] != h_bin_data_GPU[i]) {
+            printf("Index %d. Asserted: %d. From kernel: %d ", i, h_bin_data_CPU[i], h_bin_data_GPU[i]);
             printf("FAILED \n");
             match = false;
         }
-        else {
+        /*else {
             printf("\n");
-        }
+        }*/
     }
     std::cout << (match ? "Результаты сошлись" : "Результаты не сошлись");
 

@@ -94,7 +94,8 @@ cudaError_t histogramWithCuda(unsigned char* h_hist_data, unsigned long long* h_
 
     cudaStatus = cudaMemcpy(d_hist_data, h_hist_data, size, cudaMemcpyHostToDevice);
     if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed!");
+        fprintf(stderr, "cudaMemcpy failed! %d");
+        printf("%d", cudaStatus);
         goto Error;
     }
 
@@ -105,6 +106,7 @@ cudaError_t histogramWithCuda(unsigned char* h_hist_data, unsigned long long* h_
     cudaStatus = cudaMemcpy(h_bin_data_GPU, d_bin_data, BIN_COUNT * sizeof(long long), cudaMemcpyDeviceToHost);
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaMemcpy failed!");
+        printf("%d", cudaStatus);
         goto Error;
     }
 
@@ -151,6 +153,12 @@ int histogramWrapper(unsigned int size) {
     h_bin_data_CPU = (unsigned long long*)malloc(BIN_COUNT * sizeof(unsigned long long));
     h_bin_data_GPU = (unsigned long long*)malloc(BIN_COUNT * sizeof(unsigned long long));
 
+    cudaError_t cudaStatus = histogramWithCuda(h_hist_data, h_bin_data_GPU, size);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "histogramWithCuda failed!");
+        return 1;
+    }
+
     myhistogramCPU(h_hist_data, h_bin_data_CPU, size);
 
     //std::cout << "\n0 - " << h_bin_data_CPU[0] << std::endl;
@@ -161,12 +169,6 @@ int histogramWrapper(unsigned int size) {
         }
     }
     std::cout << std::endl;*/
-
-    cudaError_t cudaStatus = histogramWithCuda(h_hist_data, h_bin_data_GPU, size);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "histogramWithCuda failed!");
-        return 1;
-    }
     std::cout << "\nСравнение результатов...\n";
     bool match = true;
     for (size_t i = 0; i < BIN_COUNT; i++)
